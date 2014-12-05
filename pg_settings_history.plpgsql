@@ -59,13 +59,17 @@ BEGIN
         
         GET DIAGNOSTICS v_changes = ROW_COUNT;
 
-        -- Update the snapshot ready for the next run.
-        TRUNCATE public.pg_settings_last;
-        INSERT INTO pg_settings_last (name, setting, unit, category, short_desc, extra_desc, context, vartype, source, min_val, 
+        IF (v_changes > 0) THEN
+            -- Update the snapshot ready for the next run.
+            TRUNCATE public.pg_settings_last;
+            INSERT INTO pg_settings_last (name, setting, unit, category, short_desc, extra_desc, context, vartype, source, min_val, 
                 max_val, enumvals, boot_val, reset_val, sourcefile, sourceline)
-        SELECT * FROM pg_settings;
-    
-        RETURN (v_changes > 0);
+            SELECT * FROM pg_settings;
+
+            RETURN true;
+   	ELSE 
+            RETURN false;
+	END IF; 
     END IF;    
 END;
 
