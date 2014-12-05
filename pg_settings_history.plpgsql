@@ -1,0 +1,73 @@
+-- 
+-- Glyn Astill 02/01/2011
+-- Function to schedule in order to keep a history of server run-time parameters
+--
+
+CREATE OR REPLACE FUNCTION public.log_pg_settings_history()
+RETURNS boolean AS
+$BODY$
+
+DECLARE
+    v_changes integer;
+BEGIN
+    -- Setup 2 tables to store the last snapshot of the settings and a history of changes
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'pg_settings_last') THEN
+        RAISE NOTICE 'A snapshot of the last contents of pg_settings will be stored in public.pg_settings_last';
+        CREATE TABLE public.pg_settings_last AS SELECT * FROM pg_settings;
+        ALTER TABLE pg_settings_last ADD COLUMN snapshot timestamp DEFAULT current_timestamp;
+
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'pg_settings_history') THEN
+            RAISE EXCEPTION 'Please drop or rename table public.pg_settings_history and try again';
+        ELSE
+            RAISE NOTICE 'History of changes to pg_settings will be stored in public.pg_settings_history';
+            CREATE TABLE public.pg_settings_history (LIKE public.pg_settings_last);
+            ALTER TABLE pg_settings_history ADD COLUMN version varchar(3);
+            
+            CREATE OR REPLACE FUNCTION public.pg_settings_history_version() RETURNS trigger AS $TRIG$
+                BEGIN
+                    IF NEW.snapshot = current_timestamp THEN 
+                        NEW.version = 'new';
+                    ELSE
+                        NEW.version = 'old';
+                END IF;
+                RETURN NEW;
+            END;
+            $TRIG$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER g_settings_history_version_trigger
+            BEFORE INSERT ON public.pg_settings_history
+            FOR EACH ROW
+            EXECUTE PROCEDURE public.pg_settings_history_version();
+
+        END IF;
+
+        RETURN false;
+    ELSE 
+        -- Select out any changes since the last execution into our history table
+        INSERT INTO public.pg_settings_history 
+        WITH changed AS (
+            SELECT * FROM pg_settings
+            EXCEPT
+            SELECT name, setting, unit, category, short_desc, extra_desc, context, vartype, source, min_val, 
+                    max_val, enumvals, boot_val, reset_val, sourcefile, sourceline
+            FROM pg_settings_last
+        )
+        SELECT *, current_timestamp AS snapshot FROM pg_settings WHERE name IN (SELECT name FROM changed c)
+        UNION 
+        SELECT * FROM pg_settings_last  WHERE name IN (SELECT name FROM changed c)
+        ORDER BY name, snapshot;
+        
+        GET DIAGNOSTICS v_changes = ROW_COUNT;
+
+        -- Update the snapshot ready for the next run.
+        TRUNCATE public.pg_settings_last;
+        INSERT INTO pg_settings_last (name, setting, unit, category, short_desc, extra_desc, context, vartype, source, min_val, 
+                max_val, enumvals, boot_val, reset_val, sourcefile, sourceline)
+        SELECT * FROM pg_settings;
+    
+        RETURN (v_changes > 0);
+    END IF;    
+END;
+
+$BODY$
+LANGUAGE plpgsql VOLATILE;
